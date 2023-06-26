@@ -6,7 +6,11 @@ import sys
 import subprocess
 import tempfile
 import threading
+import grpc
+import transcribe_pb2
+import transcribe_pb2_grpc
 from datetime import datetime
+from concurrent import futures
 from scipy.io.wavfile import write as write_audio
 
 import ffmpeg
@@ -58,6 +62,74 @@ class RingBuffer:
         self.full = False
         self.cur = 0
 
+
+stream_slicer = {}
+history_audio_buffer = RingBuffer()
+history_text_buffer = RingBuffer()
+model = ""
+faster_whisper_args = False
+language = "en"
+decode_options = {}
+whisper_filters = []
+output_timestamps = False
+
+class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
+    def Trans(self, request_iterator, context):
+        for audio_data in request_iterator:
+            audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
+            stream_slicer.put(audio)
+
+            if stream_slicer.should_slice():
+                # Decode the audio
+                sliced_audio, time_range = stream_slicer.slice()
+                history_audio_buffer.append(sliced_audio)
+                clear_buffers = False
+                if faster_whisper_args:
+                    segments, info = model.transcribe(sliced_audio, language=language, **decode_options)
+                    decoded_text = ""
+                    previous_segment = ""
+                    for segment in segments:
+                        if segment.text != previous_segment:
+                            decoded_text += segment.text
+                            previous_segment = segment.text
+
+                    new_prefix = decoded_text
+
+                else:
+                    result = model.transcribe(np.concatenate(history_audio_buffer.get_all()),
+                                            prefix="".join(history_text_buffer.get_all()),
+                                            language=language,
+                                            without_timestamps=True,
+                                            **decode_options)
+
+                    decoded_text = result.get("text")
+                    new_prefix = ""
+                    for segment in result["segments"]:
+                        if segment["temperature"] < 0.5 and segment["no_speech_prob"] < 0.6:
+                            new_prefix += segment["text"]
+                        else:
+                            # Clear history if the translation is unreliable, otherwise prompting on this leads to
+                            # repetition and getting stuck.
+                            clear_buffers = True
+
+                history_text_buffer.append(new_prefix)
+
+                if clear_buffers or history_text_buffer.has_repetition():
+                    history_audio_buffer.clear()
+                    history_text_buffer.clear()
+
+                decoded_text = filter_text(decoded_text, whisper_filters)
+                if decoded_text.strip():
+                    timestamp_text = '{}-{} '.format(sec2str(time_range[0]), sec2str(
+                        time_range[1])) if output_timestamps else ''
+                    print('{}{}'.format(timestamp_text, decoded_text))
+                    yield transcribe_pb2.Text(text=decoded_text)
+                else:
+                    print('skip...')
+                    yield transcribe_pb2.Text(text="skip...")
+
+            yield transcribe_pb2.Text(text='')
+        
 
 def open_stream(stream, direct_url, format, cookies):
     if direct_url:
@@ -180,6 +252,7 @@ class StreamSlicer:
         return concatenate_audio, (last_slice_second, slice_second)
 
 
+
 def sec2str(second):
     dt = datetime.utcfromtimestamp(second)
     return dt.strftime('%H:%M:%S')
@@ -191,8 +264,7 @@ def main(url, format, direct_url, cookies, frame_duration, continuous_no_speech_
          history_buffer_size, gpt_translation_prompt, gpt_translation_history_size, openai_api_key,
          gpt_model, gpt_translation_timeout, cqhttp_url, cqhttp_token, **decode_options):
 
-    n_bytes = round(frame_duration * SAMPLE_RATE *
-                    2)  # Factor 2 comes from reading the int16 stream as bytes
+
     history_audio_buffer = RingBuffer(history_buffer_size + 1)
     history_text_buffer = RingBuffer(history_buffer_size)
     stream_slicer = StreamSlicer(frame_duration=frame_duration,
@@ -228,108 +300,7 @@ def main(url, format, direct_url, cookies, frame_duration, continuous_no_speech_
                                           timeout=gpt_translation_timeout,
                                           history_size=gpt_translation_history_size)
 
-    print("Opening stream...")
-    ffmpeg_process, ytdlp_process = open_stream(url, direct_url, format, cookies)
-
-    def handler(signum, frame):
-        ffmpeg_process.kill()
-        if ytdlp_process:
-            ytdlp_process.kill()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, handler)
-
-    while ffmpeg_process.poll() is None:
-        # Read audio from ffmpeg stream
-        in_bytes = ffmpeg_process.stdout.read(n_bytes)
-        if not in_bytes:
-            break
-
-        audio = np.frombuffer(in_bytes, np.int16).flatten().astype(np.float32) / 32768.0
-        stream_slicer.put(audio)
-
-        if stream_slicer.should_slice():
-            # Decode the audio
-            sliced_audio, time_range = stream_slicer.slice()
-            history_audio_buffer.append(sliced_audio)
-            clear_buffers = False
-            if faster_whisper_args:
-                segments, info = model.transcribe(sliced_audio, language=language, **decode_options)
-                decoded_text = ""
-                previous_segment = ""
-                for segment in segments:
-                    if segment.text != previous_segment:
-                        decoded_text += segment.text
-                        previous_segment = segment.text
-
-                new_prefix = decoded_text
-
-            elif use_whisper_api:
-                with tempfile.NamedTemporaryFile(mode='wb+', suffix='.wav') as audio_file:
-                    write_audio(audio_file, SAMPLE_RATE, sliced_audio)
-                    decoded_text = whisper_transcribe(audio_file, openai_api_key)
-                new_prefix = decoded_text
-
-            else:
-                result = model.transcribe(np.concatenate(history_audio_buffer.get_all()),
-                                          prefix="".join(history_text_buffer.get_all()),
-                                          language=language,
-                                          without_timestamps=True,
-                                          **decode_options)
-
-                decoded_text = result.get("text")
-                new_prefix = ""
-                for segment in result["segments"]:
-                    if segment["temperature"] < 0.5 and segment["no_speech_prob"] < 0.6:
-                        new_prefix += segment["text"]
-                    else:
-                        # Clear history if the translation is unreliable, otherwise prompting on this leads to
-                        # repetition and getting stuck.
-                        clear_buffers = True
-
-            history_text_buffer.append(new_prefix)
-
-            if clear_buffers or history_text_buffer.has_repetition():
-                history_audio_buffer.clear()
-                history_text_buffer.clear()
-
-            decoded_text = filter_text(decoded_text, whisper_filters)
-            if decoded_text.strip():
-                timestamp_text = '{}-{} '.format(sec2str(time_range[0]), sec2str(
-                    time_range[1])) if output_timestamps else ''
-                print('{}{}'.format(timestamp_text, decoded_text))
-                if translator:
-                    translation_task = TranslationTask(decoded_text, time_range)
-                    translator.put(translation_task)
-                elif cqhttp_url:
-                    send_to_cqhttp(cqhttp_url, cqhttp_token, decoded_text)
-            else:
-                print('skip...')
-
-        if translator:
-            for task in translator.get_results():
-                if cqhttp_url:
-                    timestamp_text = '{}-{}\n'.format(sec2str(
-                        task.time_range[0]), sec2str(
-                            task.time_range[1])) if output_timestamps else ''
-                    if task.output_text:
-                        send_to_cqhttp(
-                            cqhttp_url, cqhttp_token,
-                            '{}{}\n{}'.format(timestamp_text, task.input_text, task.output_text))
-                    else:
-                        send_to_cqhttp(cqhttp_url, cqhttp_token,
-                                       '{}{}'.format(timestamp_text, task.input_text))
-                if task.output_text:
-                    timestamp_text = '{}-{} '.format(sec2str(
-                        task.time_range[0]), sec2str(
-                            task.time_range[1])) if output_timestamps else ''
-                    print('\033[1m{}{}\033[0m'.format(timestamp_text, task.output_text))
-
-    print("Stream ended")
-
-    ffmpeg_process.kill()
-    if ytdlp_process:
-        ytdlp_process.kill()
+    print("Begin...")
 
 
 def cli():
@@ -524,6 +495,22 @@ def cli():
 
     main(url, faster_whisper_args=faster_whisper_args if use_faster_whisper else None, **args)
 
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    transcribe_pb2_grpc.add_TranscriberServicer_to_server(TranscribeService(), server)
+    server.add_insecure_port('[::]:50051')
+    server.start()
+    print("Server started on port 50051")
+    server.wait_for_termination() 
+
+
+def serve():
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    transcribe_pb2_grpc.add_TranscriberServicer_to_server(TranscribeService(), server)
+    server.add_insecure_port('[::]:50051')
+    server.start()
+    print("Server started on port 50051")
+    server.wait_for_termination()
 
 if __name__ == '__main__':
     cli()

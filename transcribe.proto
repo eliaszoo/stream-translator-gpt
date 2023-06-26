@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package transcribe;
+
+service Transcriber {
+    rpc Trans(stream AudioData) returns (stream Text) {}
+}
+
+message AudioData {
+    bytes data  = 1;
+    int32 len   = 2; 
+}
+
+message Text {
+    string content = 1;
+}
