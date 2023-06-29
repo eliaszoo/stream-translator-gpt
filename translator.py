@@ -144,11 +144,11 @@ class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
         print(request)
         #print("Received audio data", len(audio_data.data))
         # audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
-        audio_data = request.AudioData
+        audio_data = request.data
         global buff
-        print("audio data",audio_data.data)
+        print("audio data",audio_data)
         #print("audio",audio)
-        buff = np.concatenate((buff, audio_data.data))
+        buff = np.concatenate((buff, audio_data))
         #print("buffer len", len(buff))
         if len(buff) >= 1600:
             #print(buff)
@@ -208,6 +208,8 @@ class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
                     print('skip...')
                     #yield transcribe_pb2.Text(content="skip...")
             buff= np.array([])
+
+        return transcribe_pb2_grpc.Text(content="")
 
 
 def open_stream(stream, direct_url, format, cookies):
