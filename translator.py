@@ -143,11 +143,11 @@ class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
         #print("------------------------------")
         for audio_data in request_iterator:
             #print("Received audio data", len(audio_data.data))
-            audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
+            # audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
             global buff
-            #print("audio data",audio_data.data)
+            print("audio data",audio_data.data)
             #print("audio",audio)
-            buff = np.concatenate((buff, audio))
+            buff = np.concatenate((buff, audio_data.data))
             #print("buffer len", len(buff))
             if len(buff) >= 1600:
                 #print(buff)
@@ -171,6 +171,7 @@ class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
                         new_prefix = decoded_text
 
                     else:
+                        print(np.concatenate(history_audio_buffer.get_all()))
                         result = gmodel.transcribe(np.concatenate(history_audio_buffer.get_all()),
                                                 prefix="".join(history_text_buffer.get_all()),
                                                 language=glanguage,

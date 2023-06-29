@@ -7,8 +7,7 @@ service Transcriber {
 }
 
 message AudioData {
-    bytes data  = 1;
-    int32 len   = 2; 
+    repeated float data = 1;
 }
 
 message Text {
