@@ -62,10 +62,72 @@ class RingBuffer:
         self.full = False
         self.cur = 0
 
+class StreamSlicer:
 
-stream_slicer = {}
-history_audio_buffer = RingBuffer()
-history_text_buffer = RingBuffer()
+    def __init__(self, frame_duration, continuous_no_speech_threshold, min_audio_length,
+                 max_audio_length, prefix_retention_length, vad_threshold, sampling_rate):
+        self.vad = VAD()
+        self.continuous_no_speech_threshold = round(continuous_no_speech_threshold / frame_duration)
+        self.min_audio_length = round(min_audio_length / frame_duration)
+        self.max_audio_length = round(max_audio_length / frame_duration)
+        self.prefix_retention_length = round(prefix_retention_length / frame_duration)
+        self.vad_threshold = vad_threshold
+        self.sampling_rate = sampling_rate
+        self.audio_buffer = []
+        self.prefix_audio_buffer = []
+        self.speech_count = 0
+        self.no_speech_count = 0
+        self.continuous_no_speech_count = 0
+        self.frame_duration = frame_duration
+        self.counter = 0
+        self.last_slice_second = 0.0
+
+    def put(self, audio):
+        self.counter += 1
+        if self.vad.is_speech(audio, self.vad_threshold, self.sampling_rate):
+            self.audio_buffer.append(audio)
+            self.speech_count += 1
+            self.continuous_no_speech_count = 0
+        else:
+            if self.speech_count == 0 and self.no_speech_count == 1:
+                self.slice()
+            self.audio_buffer.append(audio)
+            self.no_speech_count += 1
+            self.continuous_no_speech_count += 1
+        if self.speech_count and self.no_speech_count / 4 > self.speech_count:
+            self.slice()
+
+    def should_slice(self):
+        audio_len = len(self.audio_buffer)
+        if audio_len < self.min_audio_length:
+            return False
+        if audio_len > self.max_audio_length:
+            return True
+        if self.continuous_no_speech_count >= self.continuous_no_speech_threshold:
+            return True
+        return False
+
+    def slice(self):
+        concatenate_buffer = self.prefix_audio_buffer + self.audio_buffer
+        concatenate_audio = np.concatenate(concatenate_buffer)
+        self.audio_buffer = []
+        self.prefix_audio_buffer = concatenate_buffer[-self.prefix_retention_length:]
+        self.speech_count = 0
+        self.no_speech_count = 0
+        self.continuous_no_speech_count = 0
+        # self.vad.reset_states()
+        slice_second = self.counter * self.frame_duration
+        last_slice_second = self.last_slice_second
+        self.last_slice_second = slice_second
+        return concatenate_audio, (last_slice_second, slice_second)
+
+stream_slicer = StreamSlicer(frame_duration=0.01, continuous_no_speech_threshold=0.8,
+                             min_audio_length=3.0, max_audio_length=30.0,
+                             prefix_retention_length=0.8, vad_threshold=0.5,
+                             sampling_rate=SAMPLE_RATE)
+
+history_audio_buffer = RingBuffer(1)
+history_text_buffer = RingBuffer(0)
 model = ""
 faster_whisper_args = False
 language = "en"
@@ -190,67 +252,6 @@ def filter_text(text, whisper_filters):
             raise Exception('Unknown filter: %s' % filter_name)
         text = filter(text)
     return text
-
-
-class StreamSlicer:
-
-    def __init__(self, frame_duration, continuous_no_speech_threshold, min_audio_length,
-                 max_audio_length, prefix_retention_length, vad_threshold, sampling_rate):
-        self.vad = VAD()
-        self.continuous_no_speech_threshold = round(continuous_no_speech_threshold / frame_duration)
-        self.min_audio_length = round(min_audio_length / frame_duration)
-        self.max_audio_length = round(max_audio_length / frame_duration)
-        self.prefix_retention_length = round(prefix_retention_length / frame_duration)
-        self.vad_threshold = vad_threshold
-        self.sampling_rate = sampling_rate
-        self.audio_buffer = []
-        self.prefix_audio_buffer = []
-        self.speech_count = 0
-        self.no_speech_count = 0
-        self.continuous_no_speech_count = 0
-        self.frame_duration = frame_duration
-        self.counter = 0
-        self.last_slice_second = 0.0
-
-    def put(self, audio):
-        self.counter += 1
-        if self.vad.is_speech(audio, self.vad_threshold, self.sampling_rate):
-            self.audio_buffer.append(audio)
-            self.speech_count += 1
-            self.continuous_no_speech_count = 0
-        else:
-            if self.speech_count == 0 and self.no_speech_count == 1:
-                self.slice()
-            self.audio_buffer.append(audio)
-            self.no_speech_count += 1
-            self.continuous_no_speech_count += 1
-        if self.speech_count and self.no_speech_count / 4 > self.speech_count:
-            self.slice()
-
-    def should_slice(self):
-        audio_len = len(self.audio_buffer)
-        if audio_len < self.min_audio_length:
-            return False
-        if audio_len > self.max_audio_length:
-            return True
-        if self.continuous_no_speech_count >= self.continuous_no_speech_threshold:
-            return True
-        return False
-
-    def slice(self):
-        concatenate_buffer = self.prefix_audio_buffer + self.audio_buffer
-        concatenate_audio = np.concatenate(concatenate_buffer)
-        self.audio_buffer = []
-        self.prefix_audio_buffer = concatenate_buffer[-self.prefix_retention_length:]
-        self.speech_count = 0
-        self.no_speech_count = 0
-        self.continuous_no_speech_count = 0
-        # self.vad.reset_states()
-        slice_second = self.counter * self.frame_duration
-        last_slice_second = self.last_slice_second
-        self.last_slice_second = slice_second
-        return concatenate_audio, (last_slice_second, slice_second)
-
 
 
 def sec2str(second):
