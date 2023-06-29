@@ -134,61 +134,69 @@ language = "en"
 decode_options = {}
 whisper_filters = []
 output_timestamps = False
+buffer = []
 
 class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
     def Trans(self, request_iterator, context):
+        print("------------------------------")
         for audio_data in request_iterator:
+            print("Received audio data", len(audio_data.data))
             audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
-            stream_slicer.put(audio)
+            buffer.append(audio)
+            if len(buffer) >= 1600:
+                stream_slicer.put(buffer)
+                if stream_slicer.should_slice():
+                    # Decode the audio
+                    sliced_audio, time_range = stream_slicer.slice()
+                    print("Sliced audio", len(sliced_audio), time_range)
+                    history_audio_buffer.append(sliced_audio)
+                    clear_buffers = False
+                    if faster_whisper_args:
+                        segments, info = model.transcribe(sliced_audio, language=language, **decode_options)
+                        decoded_text = ""
+                        previous_segment = ""
+                        for segment in segments:
+                            if segment.text != previous_segment:
+                                decoded_text += segment.text
+                                previous_segment = segment.text
 
-            if stream_slicer.should_slice():
-                # Decode the audio
-                sliced_audio, time_range = stream_slicer.slice()
-                history_audio_buffer.append(sliced_audio)
-                clear_buffers = False
-                if faster_whisper_args:
-                    segments, info = model.transcribe(sliced_audio, language=language, **decode_options)
-                    decoded_text = ""
-                    previous_segment = ""
-                    for segment in segments:
-                        if segment.text != previous_segment:
-                            decoded_text += segment.text
-                            previous_segment = segment.text
+                        new_prefix = decoded_text
 
-                    new_prefix = decoded_text
+                    else:
+                        result = model.transcribe(np.concatenate(history_audio_buffer.get_all()),
+                                                prefix="".join(history_text_buffer.get_all()),
+                                                language=language,
+                                                without_timestamps=True,
+                                                **decode_options)
 
-                else:
-                    result = model.transcribe(np.concatenate(history_audio_buffer.get_all()),
-                                            prefix="".join(history_text_buffer.get_all()),
-                                            language=language,
-                                            without_timestamps=True,
-                                            **decode_options)
+                        decoded_text = result.get("text")
+                        new_prefix = ""
+                        for segment in result["segments"]:
+                            if segment["temperature"] < 0.5 and segment["no_speech_prob"] < 0.6:
+                                new_prefix += segment["text"]
+                            else:
+                                # Clear history if the translation is unreliable, otherwise prompting on this leads to
+                                # repetition and getting stuck.
+                                clear_buffers = True
 
-                    decoded_text = result.get("text")
-                    new_prefix = ""
-                    for segment in result["segments"]:
-                        if segment["temperature"] < 0.5 and segment["no_speech_prob"] < 0.6:
-                            new_prefix += segment["text"]
-                        else:
-                            # Clear history if the translation is unreliable, otherwise prompting on this leads to
-                            # repetition and getting stuck.
-                            clear_buffers = True
+                    history_text_buffer.append(new_prefix)
 
-                history_text_buffer.append(new_prefix)
+                    if clear_buffers or history_text_buffer.has_repetition():
+                        history_audio_buffer.clear()
+                        history_text_buffer.clear()
 
-                if clear_buffers or history_text_buffer.has_repetition():
-                    history_audio_buffer.clear()
-                    history_text_buffer.clear()
+                    decoded_text = filter_text(decoded_text, whisper_filters)
+                    if decoded_text.strip():
+                        timestamp_text = '{}-{} '.format(sec2str(time_range[0]), sec2str(
+                            time_range[1])) if output_timestamps else ''
+                        print('{}{}'.format(timestamp_text, decoded_text))
+                        yield transcribe_pb2.Text(text=decoded_text)
+                    else:
+                        print('skip...')
+                        yield transcribe_pb2.Text(text="skip...")
+                buffer.clear()
 
-                decoded_text = filter_text(decoded_text, whisper_filters)
-                if decoded_text.strip():
-                    timestamp_text = '{}-{} '.format(sec2str(time_range[0]), sec2str(
-                        time_range[1])) if output_timestamps else ''
-                    print('{}{}'.format(timestamp_text, decoded_text))
-                    yield transcribe_pb2.Text(text=decoded_text)
-                else:
-                    print('skip...')
-                    yield transcribe_pb2.Text(text="skip...")
+            
 
             yield transcribe_pb2.Text(text='')
         
