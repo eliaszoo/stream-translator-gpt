@@ -89,16 +89,18 @@ class StreamSlicer:
             self.speech_count += 1
             self.continuous_no_speech_count = 0
         else:
-            if self.speech_count == 0 and self.no_speech_count == 1:
-                self.slice()
+            #if self.speech_count == 0 and self.no_speech_count == 1:
+                #self.slice()
             self.audio_buffer.append(audio)
             self.no_speech_count += 1
             self.continuous_no_speech_count += 1
         if self.speech_count and self.no_speech_count / 4 > self.speech_count:
             self.slice()
+        #print(self.counter, self.speech_count, self.no_speech_count, len(self.audio_buffer))
 
     def should_slice(self):
         audio_len = len(self.audio_buffer)
+        #print(audio_len)
         if audio_len < self.min_audio_length:
             return False
         if audio_len > self.max_audio_length:
@@ -128,31 +130,37 @@ stream_slicer = StreamSlicer(frame_duration=0.01, continuous_no_speech_threshold
 
 history_audio_buffer = RingBuffer(1)
 history_text_buffer = RingBuffer(0)
-model = ""
-faster_whisper_args = False
-language = "en"
-decode_options = {}
-whisper_filters = []
-output_timestamps = False
-buffer = []
+gmodel = ""
+gfaster_whisper_args = False
+glanguage = "en"
+gdecode_options = {}
+gwhisper_filters = []
+goutput_timestamps = False
+buff = np.array([])
 
 class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
     def Trans(self, request_iterator, context):
-        print("------------------------------")
+        #print("------------------------------")
         for audio_data in request_iterator:
-            print("Received audio data", len(audio_data.data))
+            #print("Received audio data", len(audio_data.data))
             audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
-            buffer.append(audio)
-            if len(buffer) >= 1600:
-                stream_slicer.put(buffer)
+            global buff
+            #print("audio data",audio_data.data)
+            #print("audio",audio)
+            buff = np.concatenate((buff, audio))
+            #print("buffer len", len(buff))
+            if len(buff) >= 1600:
+                #print(buff)
+                #print('put')
+                stream_slicer.put(buff)
                 if stream_slicer.should_slice():
                     # Decode the audio
                     sliced_audio, time_range = stream_slicer.slice()
                     print("Sliced audio", len(sliced_audio), time_range)
                     history_audio_buffer.append(sliced_audio)
                     clear_buffers = False
-                    if faster_whisper_args:
-                        segments, info = model.transcribe(sliced_audio, language=language, **decode_options)
+                    if gfaster_whisper_args:
+                        segments, info = gmodel.transcribe(sliced_audio, language=glanguage, **gdecode_options)
                         decoded_text = ""
                         previous_segment = ""
                         for segment in segments:
@@ -163,12 +171,13 @@ class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
                         new_prefix = decoded_text
 
                     else:
-                        result = model.transcribe(np.concatenate(history_audio_buffer.get_all()),
+                        result = gmodel.transcribe(np.concatenate(history_audio_buffer.get_all()),
                                                 prefix="".join(history_text_buffer.get_all()),
-                                                language=language,
+                                                language=glanguage,
                                                 without_timestamps=True,
-                                                **decode_options)
+                                                **gdecode_options)
 
+                        print(result)
                         decoded_text = result.get("text")
                         new_prefix = ""
                         for segment in result["segments"]:
@@ -185,21 +194,21 @@ class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
                         history_audio_buffer.clear()
                         history_text_buffer.clear()
 
-                    decoded_text = filter_text(decoded_text, whisper_filters)
+                    decoded_text = filter_text(decoded_text, gwhisper_filters)
                     if decoded_text.strip():
                         timestamp_text = '{}-{} '.format(sec2str(time_range[0]), sec2str(
-                            time_range[1])) if output_timestamps else ''
+                            time_range[1])) if goutput_timestamps else ''
                         print('{}{}'.format(timestamp_text, decoded_text))
-                        yield transcribe_pb2.Text(text=decoded_text)
+                        yield transcribe_pb2.Text(content=decoded_text)
                     else:
                         print('skip...')
-                        yield transcribe_pb2.Text(text="skip...")
-                buffer.clear()
+                        yield transcribe_pb2.Text(content="skip...")
+                buff= np.array([])
 
-            
 
-            yield transcribe_pb2.Text(text='')
-        
+
+            yield transcribe_pb2.Text(content='')
+
 
 def open_stream(stream, direct_url, format, cookies):
     if direct_url:
@@ -273,6 +282,15 @@ def main(url, format, direct_url, cookies, frame_duration, continuous_no_speech_
          history_buffer_size, gpt_translation_prompt, gpt_translation_history_size, openai_api_key,
          gpt_model, gpt_translation_timeout, cqhttp_url, cqhttp_token, **decode_options):
 
+    global stream_slicer, history_audio_buffer, history_text_buffer, gmodel, gfaster_whisper_args 
+    global glanguage, gwhisper_filters, goutput_timestamps, gdecode_options
+
+    gfaster_whisper_args = faster_whisper_args
+    glanguage = language
+    gwhisper_filters = whisper_filters
+    goutput_timestamps = output_timestamps
+    gdecode_options = decode_options
+
 
     history_audio_buffer = RingBuffer(history_buffer_size + 1)
     history_text_buffer = RingBuffer(history_buffer_size)
@@ -284,16 +302,17 @@ def main(url, format, direct_url, cookies, frame_duration, continuous_no_speech_
                                  vad_threshold=vad_threshold,
                                  sampling_rate=SAMPLE_RATE)
 
+    
     if faster_whisper_args:
         print("Loading faster whisper model: {}".format(faster_whisper_args["model_path"]))
         from faster_whisper import WhisperModel
-        model = WhisperModel(faster_whisper_args["model_path"],
+        gmodel = WhisperModel(faster_whisper_args["model_path"],
                              device=faster_whisper_args["device"],
                              compute_type=faster_whisper_args["compute_type"])
     elif not use_whisper_api:
         print("Loading whisper model: {}".format(model))
         import whisper
-        model = whisper.load_model(model)
+        gmodel = whisper.load_model(model)
 
     translator = None
     if gpt_translation_prompt and openai_api_key:
@@ -509,7 +528,7 @@ def cli():
     server.add_insecure_port('[::]:50051')
     server.start()
     print("Server started on port 50051")
-    server.wait_for_termination() 
+    server.wait_for_termination()
 
 
 def serve():
