@@ -3,7 +3,7 @@ syntax = "proto3";
 package transcribe;
 
 service Transcriber {
-    rpc Trans(stream AudioData) returns (stream Text) {}
+    rpc Trans(AudioData) returns (Text) {}
 }
 
 message AudioData {

@@ -139,76 +139,75 @@ goutput_timestamps = False
 buff = np.array([])
 
 class TranscribeService(transcribe_pb2_grpc.TranscriberServicer):
-    def Trans(self, request_iterator, context):
+    def Trans(self, request, context):
         #print("------------------------------")
-        for audio_data in request_iterator:
-            #print("Received audio data", len(audio_data.data))
-            # audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
-            global buff
-            print("audio data",audio_data.data)
-            #print("audio",audio)
-            buff = np.concatenate((buff, audio_data.data))
-            #print("buffer len", len(buff))
-            if len(buff) >= 1600:
-                #print(buff)
-                #print('put')
-                stream_slicer.put(buff)
-                if stream_slicer.should_slice():
-                    # Decode the audio
-                    sliced_audio, time_range = stream_slicer.slice()
-                    print("Sliced audio", len(sliced_audio), time_range)
-                    history_audio_buffer.append(sliced_audio)
-                    clear_buffers = False
-                    if gfaster_whisper_args:
-                        segments, info = gmodel.transcribe(sliced_audio, language=glanguage, **gdecode_options)
-                        decoded_text = ""
-                        previous_segment = ""
-                        for segment in segments:
-                            if segment.text != previous_segment:
-                                decoded_text += segment.text
-                                previous_segment = segment.text
+        print(request)
+        #print("Received audio data", len(audio_data.data))
+        # audio = np.frombuffer(audio_data.data, np.int16).flatten().astype(np.float32) / 32768.0
+        audio_data = request.AudioData
+        global buff
+        print("audio data",audio_data.data)
+        #print("audio",audio)
+        buff = np.concatenate((buff, audio_data.data))
+        #print("buffer len", len(buff))
+        if len(buff) >= 1600:
+            #print(buff)
+            #print('put')
+            stream_slicer.put(buff)
+            if stream_slicer.should_slice():
+                # Decode the audio
+                sliced_audio, time_range = stream_slicer.slice()
+                print("Sliced audio", len(sliced_audio), time_range)
+                history_audio_buffer.append(sliced_audio)
+                clear_buffers = False
+                if gfaster_whisper_args:
+                    segments, info = gmodel.transcribe(sliced_audio, language=glanguage, **gdecode_options)
+                    decoded_text = ""
+                    previous_segment = ""
+                    for segment in segments:
+                        if segment.text != previous_segment:
+                            decoded_text += segment.text
+                            previous_segment = segment.text
 
-                        new_prefix = decoded_text
+                    new_prefix = decoded_text
 
-                    else:
-                        print(np.concatenate(history_audio_buffer.get_all()))
-                        result = gmodel.transcribe(np.concatenate(history_audio_buffer.get_all()),
-                                                prefix="".join(history_text_buffer.get_all()),
-                                                language=glanguage,
-                                                without_timestamps=True,
-                                                **gdecode_options)
+                else:
+                    print(np.concatenate(history_audio_buffer.get_all()))
+                    print("".join(history_text_buffer.get_all()))
+                    print(**gdecode_options)
+                    result = gmodel.transcribe(np.concatenate(history_audio_buffer.get_all()),
+                                            prefix="".join(history_text_buffer.get_all()),
+                                            language=glanguage,
+                                            without_timestamps=True,
+                                            **gdecode_options)
 
-                        print(result)
-                        decoded_text = result.get("text")
-                        new_prefix = ""
-                        for segment in result["segments"]:
-                            if segment["temperature"] < 0.5 and segment["no_speech_prob"] < 0.6:
-                                new_prefix += segment["text"]
-                            else:
-                                # Clear history if the translation is unreliable, otherwise prompting on this leads to
-                                # repetition and getting stuck.
-                                clear_buffers = True
+                    print(result)
+                    decoded_text = result.get("text")
+                    new_prefix = ""
+                    for segment in result["segments"]:
+                        if segment["temperature"] < 0.5 and segment["no_speech_prob"] < 0.6:
+                            new_prefix += segment["text"]
+                        else:
+                            # Clear history if the translation is unreliable, otherwise prompting on this leads to
+                            # repetition and getting stuck.
+                            clear_buffers = True
 
-                    history_text_buffer.append(new_prefix)
+                history_text_buffer.append(new_prefix)
 
-                    if clear_buffers or history_text_buffer.has_repetition():
-                        history_audio_buffer.clear()
-                        history_text_buffer.clear()
+                if clear_buffers or history_text_buffer.has_repetition():
+                    history_audio_buffer.clear()
+                    history_text_buffer.clear()
 
-                    decoded_text = filter_text(decoded_text, gwhisper_filters)
-                    if decoded_text.strip():
-                        timestamp_text = '{}-{} '.format(sec2str(time_range[0]), sec2str(
-                            time_range[1])) if goutput_timestamps else ''
-                        print('{}{}'.format(timestamp_text, decoded_text))
-                        yield transcribe_pb2.Text(content=decoded_text)
-                    else:
-                        print('skip...')
-                        yield transcribe_pb2.Text(content="skip...")
-                buff= np.array([])
-
-
-
-            yield transcribe_pb2.Text(content='')
+                decoded_text = filter_text(decoded_text, gwhisper_filters)
+                if decoded_text.strip():
+                    timestamp_text = '{}-{} '.format(sec2str(time_range[0]), sec2str(
+                        time_range[1])) if goutput_timestamps else ''
+                    print('{}{}'.format(timestamp_text, decoded_text))
+                    #yield transcribe_pb2.Text(content=decoded_text)
+                else:
+                    print('skip...')
+                    #yield transcribe_pb2.Text(content="skip...")
+            buff= np.array([])
 
 
 def open_stream(stream, direct_url, format, cookies):

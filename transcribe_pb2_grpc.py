@@ -14,7 +14,7 @@ class TranscriberStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.Trans = channel.stream_stream(
+        self.Trans = channel.unary_unary(
                 '/transcribe.Transcriber/Trans',
                 request_serializer=transcribe__pb2.AudioData.SerializeToString,
                 response_deserializer=transcribe__pb2.Text.FromString,
@@ -24,7 +24,7 @@ class TranscriberStub(object):
 class TranscriberServicer(object):
     """Missing associated documentation comment in .proto file."""
 
-    def Trans(self, request_iterator, context):
+    def Trans(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -33,7 +33,7 @@ class TranscriberServicer(object):
 
 def add_TranscriberServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'Trans': grpc.stream_stream_rpc_method_handler(
+            'Trans': grpc.unary_unary_rpc_method_handler(
                     servicer.Trans,
                     request_deserializer=transcribe__pb2.AudioData.FromString,
                     response_serializer=transcribe__pb2.Text.SerializeToString,
@@ -49,7 +49,7 @@ class Transcriber(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def Trans(request_iterator,
+    def Trans(request,
             target,
             options=(),
             channel_credentials=None,
@@ -59,7 +59,7 @@ class Transcriber(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.stream_stream(request_iterator, target, '/transcribe.Transcriber/Trans',
+        return grpc.experimental.unary_unary(request, target, '/transcribe.Transcriber/Trans',
             transcribe__pb2.AudioData.SerializeToString,
             transcribe__pb2.Text.FromString,
             options, channel_credentials,

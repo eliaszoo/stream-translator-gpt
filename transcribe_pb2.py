@@ -13,7 +13,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10transcribe.proto\x12\ntranscribe\"\x19\n\tAudioData\x12\x0c\n\x04\x64\x61ta\x18\x01 \x03(\x02\"\x17\n\x04Text\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t2E\n\x0bTranscriber\x12\x36\n\x05Trans\x12\x15.transcribe.AudioData\x1a\x10.transcribe.Text\"\x00(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10transcribe.proto\x12\ntranscribe\"\x19\n\tAudioData\x12\x0c\n\x04\x64\x61ta\x18\x01 \x03(\x02\"\x17\n\x04Text\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t2A\n\x0bTranscriber\x12\x32\n\x05Trans\x12\x15.transcribe.AudioData\x1a\x10.transcribe.Text\"\x00\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -26,5 +26,5 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   _globals['_TEXT']._serialized_start=59
   _globals['_TEXT']._serialized_end=82
   _globals['_TRANSCRIBER']._serialized_start=84
-  _globals['_TRANSCRIBER']._serialized_end=153
+  _globals['_TRANSCRIBER']._serialized_end=149
 # @@protoc_insertion_point(module_scope)
